@@ -23,14 +23,15 @@ func TestTokenize(t *testing.T) {
 	}
 
 	bb := []*Binding[string]{
-		Bind("ws", Skipper(ws), "white space"),
+		Bind("ws", Skip(ws), "white space"),
 		Bind("id", StartCont(id_start, id_cont), "ident"),
 		Bind("hex", Uint(`\x`, ";", 16), "char code sequence"),
 		Bind("hex", Uint(`\x`, ";", 16), "char code sequence"),
 		Bind("dec", Uint("", "", 10), "digit sequence"),
 		Bind("str", String(str_quote, str_content, 0), "string"),
-		Bind("slc", StartStopSequence("//", ""), "single-line comment"),
-		Bind("mlc", StartStopSequence("/*", "*/"), "multi-line comment"),
+		Bind("slc", Between("//", ""), "single-line comment"),
+		Bind("mlc", Between("/*", "*/"), "multi-line comment"),
+		Bind("punct", AnyOf("+", "+=", "="), "punct"),
 	}
 
 	tests := []struct {
@@ -67,6 +68,9 @@ func TestTokenize(t *testing.T) {
 		{"// abc /*xyz*/", "<slc: abc /*xyz*/>"},
 		{"// abc\n/*xyz*/", "<slc: abc><mlc:xyz>"},
 		{"/*xyz \n// abc*/", "<mlc:xyz \n// abc>"},
+		{"+", "<punct:+>"},
+		{"+=", "<punct:+=>"},
+		{"+ =", "<punct:+> <punct:=>"},
 	}
 	for _, tt := range tests {
 		name := fmt.Sprintf("tokenize %q", tt.src)

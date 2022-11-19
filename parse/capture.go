@@ -1,297 +1,380 @@
 package parse
 
 import (
-	"math"
 	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
-type skipper struct {
-	match func(rune) bool
+func Codepoint(r rune) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		if src.Hop(r) {
+			if dst != nil {
+				dst.WriteRune(r)
+			}
+			return ErrCodeNone
+		} else {
+			return ErrCodeUnmatched
+		}
+	}
 }
 
-func (s *skipper) Capture(src Source) (any, ErrCode) {
-	_, size := src.Skip(s.match)
-	if size > 0 {
-		return "", ErrCodeNone
+func Literal(s string) StringCapturer {
+	if len(s) == 0 {
+		panic("empty literal capturer is not allowed")
+	}
+	return func(src Source, dst *strings.Builder) ErrCode {
+		if src.Leap(s) {
+			if dst != nil {
+				dst.WriteString(s)
+			}
+			return ErrCodeNone
+		} else {
+			return ErrCodeUnmatched
+		}
+	}
+}
+
+func CodepointFunc(m func(rune) bool) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		r, size := src.Fetch(m)
+		if size > 0 {
+			if dst != nil {
+				dst.WriteRune(r)
+			}
+			return ErrCodeNone
+		} else {
+			return ErrCodeUnmatched
+		}
+	}
+}
+
+func Sequence(args ...StringCapturer) StringCapturer {
+	if len(args) == 0 {
+		panic("empty sequence matcher is not allowed")
+	}
+
+	if len(args) == 1 {
+		return args[0]
 	} else {
-		return nil, ErrCodeNone
-	}
-}
-
-// Skipper creates Capturer that simply skips over the content matched by m.
-// Note: it does not actually capture anything, returns an empty string instead.
-func Skipper(m func(rune) bool) Capturer {
-	return &skipper{match: m}
-}
-
-type string_capturer struct {
-	quote   func(rune) bool // match begin/end quotes
-	content func(rune) bool // match content chars
-	escape  rune            // use 0 to disable
-}
-
-// CaptureString makes a simple string literal capturer where start/stop
-// quotation mark is defined by the quote functor and inner content must pass
-// the string_char func. Singleline/Multiline option is handled by allowing or
-// disallowing '\n' with the string_char matcher.
-func String(quote, content func(rune) bool, escape rune) Capturer {
-	return &string_capturer{quote: quote, content: content, escape: escape}
-}
-
-func (sc *string_capturer) Capture(src Source) (any, ErrCode) {
-	term, size := src.Fetch(sc.quote)
-	if size == 0 {
-		return nil, ErrCodeNone
-	}
-	rr := []rune{}
-	escaped := false
-	for {
-		escaped = sc.escape > 0 && src.Hop(sc.escape)
-		if escaped {
-			rr = append(rr, sc.escape)
-		}
-		if !escaped && src.Hop(term) {
-			return string(rr), ErrCodeNone
-		} else if c, n := src.Fetch(sc.content); n > 0 {
-			rr = append(rr, c)
-		} else {
-			return nil, ErrCodeUnterminated
+		first := args[0]
+		then := args[1:]
+		return func(src Source, dst *strings.Builder) ErrCode {
+			ec := first(src, dst)
+			if ec == ErrCodeUnmatched {
+				return ErrCodeUnmatched
+			}
+			for _, m := range then {
+				ec = m(src, dst)
+				if ec == ErrCodeUnmatched {
+					return ErrCodeIncomplete
+				} else if ec != ErrCodeNone {
+					return ec
+				}
+			}
+			return ErrCodeNone
 		}
 	}
 }
 
-type startcont_capturer struct {
-	start func(rune) bool
-	cont  func(rune) bool
-}
-
-func StartCont(start, cont func(rune) bool) Capturer {
-	return &startcont_capturer{
-		start: start,
-		cont:  cont,
-	}
-}
-
-func (sc *startcont_capturer) Capture(src Source) (any, ErrCode) {
-	r, size := src.Fetch(sc.start)
-	if size == 0 {
-		return nil, ErrCodeNone
-	}
-	rr := []rune{r}
-	for {
-		r, n := src.Fetch(sc.cont)
-		if n == 0 {
-			return string(rr), ErrCodeNone
-		} else {
-			rr = append(rr, r)
+// Optional matches zero or one: (a)?
+func Optional(a StringCapturer) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		ec := a(src, dst)
+		if ec == ErrCodeUnmatched {
+			ec = ErrCodeNone
 		}
+		return ec
 	}
 }
 
-type sequence_capturer struct {
-	matchers map[rune][]string
-}
-
-func SequenceCapturer(m map[string]struct{}) Capturer {
-	sc := sequence_capturer{}
-	sc.matchers = make(map[rune][]string, len(m))
-	for k := range m {
-		r, size := utf8.DecodeLastRuneInString(k)
-		if size == 0 || (size == 1 && r == utf8.RuneError) {
+// AnyOf matches and captures any of the provided literal sequences.
+func AnyOf(args ...string) StringCapturer {
+	match_empty := len(args) > 0
+	matchers := map[rune][]string{}
+	for _, arg := range args {
+		r, size := utf8.DecodeRuneInString(arg)
+		if size == 0 {
+			match_empty = true
+		} else if size == 1 && r == utf8.RuneError {
 			panic("invalid sequence capturer key")
+		} else {
+			matchers[r] = append(matchers[r], arg)
 		}
-		sc.matchers[r] = append(sc.matchers[r], k)
 	}
-	for _, kk := range sc.matchers {
+	if len(matchers) == 0 {
+		panic("empty literal capturer is not allowed")
+	}
+	for _, kk := range matchers {
 		// sort longest first
 		sort.Slice(kk, func(i, j int) bool {
 			return len(kk[i]) > len(kk[j])
 		})
 	}
-	return &sc
-}
 
-func (sc *sequence_capturer) Capture(src Source) (any, ErrCode) {
-	c, size := src.Peek()
-	if size == 0 {
-		return nil, ErrCodeNone
-	}
-	mm, ok := sc.matchers[c]
-	if !ok {
-		return nil, ErrCodeNone
-	}
-	for _, m := range mm {
-		if src.Leap(m) {
-			return m, ErrCodeNone
-		}
-	}
-	return nil, ErrCodeNone
-}
-
-type uint_capturer struct {
-	prefix  string
-	postfix string
-	base    uint64
-	match   func(rune) uint
-}
-
-func Uint(prefix, postfix string, base int) Capturer {
-	return &uint_capturer{
-		prefix:  prefix,
-		postfix: postfix,
-		base:    uint64(base),
-		match:   make_digit_matcher(base),
-	}
-}
-
-func (hc *uint_capturer) Capture(src Source) (any, ErrCode) {
-	var v uint64
-	var overflow bool
-
-	handle_digit := func(r rune) bool {
-		d := uint64(hc.match(r))
-		if d >= hc.base {
-			return false
-		}
-		if !overflow {
-			overflow = v > math.MaxUint64/hc.base
-			if !overflow {
-				v *= hc.base
-				overflow = v > math.MaxUint64-d
-				v += d
-			}
-		}
-		return true
-	}
-
-	if hc.prefix != "" {
-		if !src.Leap(hc.prefix) {
-			return nil, ErrCodeNone
-		}
-	}
-
-	_, size := src.Skip(handle_digit)
-	if size == 0 {
-		if hc.prefix == "" {
-			return nil, ErrCodeNone
-		} else {
-			return nil, ErrCodeInvalid
-		}
-	}
-	if overflow {
-		return nil, ErrCodeInvalid
-	}
-
-	if hc.postfix != "" && !src.Leap(hc.postfix) {
-		return nil, ErrCodeUnterminated
-	}
-
-	return v, ErrCodeNone
-}
-
-func make_digit_matcher(base int) func(c rune) uint {
-	switch {
-	case base < 1:
-		panic("invalid integer base")
-	case base == 2:
-		return bin
-	case base <= 10:
-		return dec
-	case base <= 36:
-		return hex
-	default:
-		panic("unsupported integer base")
-	}
-}
-
-func bin(c rune) uint {
-	switch c {
-	case '0':
-		return 0
-	case '1':
-		return 1
-	default:
-		return 255
-	}
-}
-
-func dec(c rune) uint {
-	if c >= '0' && c <= '9' {
-		return uint(c - '0')
-	} else {
-		return 255
-	}
-}
-
-func hex(c rune) uint {
-	switch {
-	case c < '0':
-		return 255
-	case c <= '9':
-		return uint(c - '0')
-	case c < 'A':
-		return 255
-	case c <= 'Z':
-		return uint(c - 'A' + 10)
-	case c < 'a':
-		return 255
-	case c <= 'z':
-		return uint(c - 'a' + 10)
-	default:
-		return 255
-	}
-}
-
-type sequence_terminated_capturer struct {
-	prefix     string
-	terminator string // if empty, assume EOL terminator
-}
-
-func StartStopSequence(prefix, terminator string) Capturer {
-	return &sequence_terminated_capturer{
-		prefix:     prefix,
-		terminator: terminator,
-	}
-}
-
-func (sc *sequence_terminated_capturer) Capture(src Source) (any, ErrCode) {
-	if sc.prefix != "" {
-		if !src.Leap(sc.prefix) {
-			return nil, ErrCodeNone
-		}
-	}
-	rr := []rune{}
-
-	if sc.terminator == "" {
-		// read everything until EOL or EOF
-		for {
-			r, size := src.Fetch(nil)
-			if size == 0 {
-				// reached end of file, which is also considered a EOL
-				return string(rr), ErrCodeNone
-			} else if r == '\n' {
-				if len(rr) > 0 && rr[len(rr)-1] == '\r' {
-					rr = rr[:len(rr)-1]
+	return func(src Source, dst *strings.Builder) ErrCode {
+		c, size := src.Peek()
+		if size > 0 {
+			if mm, ok := matchers[c]; ok {
+				for _, m := range mm {
+					if src.Leap(m) {
+						if dst != nil {
+							dst.WriteString(m)
+						}
+						return ErrCodeNone
+					}
 				}
-				return string(rr), ErrCodeNone
-			} else {
-				rr = append(rr, r)
 			}
 		}
-	} else {
-		// read everything until sc.terminator
+		if match_empty {
+			return ErrCodeNone
+		} else {
+			return ErrCodeUnmatched
+		}
+	}
+}
+
+func OneOrMore(a StringCapturer) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		ec := a(src, dst)
+		if ec != ErrCodeNone {
+			return ec
+		}
 		for {
-			if src.Leap(sc.terminator) {
-				return string(rr), ErrCodeNone
-			}
-			r, size := src.Fetch(nil)
-			if size == 0 {
-				// eof
-				return "", ErrCodeUnterminated
-			} else {
-				rr = append(rr, r)
+			ec = a(src, dst)
+			if ec == ErrCodeUnmatched {
+				return ErrCodeNone
+			} else if ec != ErrCodeNone {
+				return ec
 			}
 		}
+	}
+}
+
+func ZeroOrMore(a StringCapturer) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		for {
+			ec := a(src, dst)
+			if ec == ErrCodeUnmatched {
+				return ErrCodeNone
+			} else if ec != ErrCodeNone {
+				return ec
+			}
+		}
+	}
+}
+
+func FirstOf(args ...StringCapturer) StringCapturer {
+	switch len(args) {
+	case 0:
+		panic("empty literal capturer is not allowed")
+	case 1:
+		return args[0]
+	default:
+		return func(src Source, dst *strings.Builder) ErrCode {
+			for _, a := range args {
+				ec := a(src, dst)
+				if ec == ErrCodeUnmatched {
+					continue
+				} else {
+					return ec
+				}
+			}
+			return ErrCodeUnmatched
+		}
+	}
+}
+
+func EOF(src Source, dst *strings.Builder) ErrCode {
+	if src.Done() {
+		return ErrCodeNone
+	} else {
+		return ErrCodeUnmatched
+	}
+}
+
+func EOL(src Source, dst *strings.Builder) ErrCode {
+	switch {
+	case src.Done():
+		return ErrCodeNone
+	case src.Hop('\n'):
+		if dst != nil {
+			dst.WriteByte('\n')
+		}
+		return ErrCodeNone
+	case src.Leap("\r\n"):
+		if dst != nil {
+			dst.WriteByte('\r')
+			dst.WriteByte('\n')
+		}
+		return ErrCodeNone
+	default:
+		return ErrCodeUnmatched
+	}
+}
+
+// HexCodeunit captures one UTF-8 codeunit by its numeric hexadecimal representation.
+//
+//   - when `allow_one_digit` == true: `[0-9A-Fa-f][0-9A-Fa-f]?`
+//   - when `allow_one_digit` == false: `[0-9A-Fa-f][0-9A-Fa-f]`
+func HexCodeunit(allow_one_digit bool) StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		v, n := ExtractHexN(src, 2)
+		if n == 0 {
+			return ErrCodeUnmatched
+		} else if n == 1 && !allow_one_digit {
+			return ErrCodeInvalid
+		} else if dst != nil {
+			dst.WriteByte(byte(v))
+		}
+		return ErrCodeNone
+	}
+}
+
+func HexCodepoint_XXXX() StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		v, n := ExtractHexN(src, 4)
+		if n == 0 {
+			return ErrCodeUnmatched
+		} else if n < 4 {
+			return ErrCodeInvalid
+		} else if dst != nil {
+			dst.WriteByte(byte(v))
+		}
+		return ErrCodeNone
+	}
+}
+
+func HexCodepoint_XXXXXXXX() StringCapturer {
+	return func(src Source, dst *strings.Builder) ErrCode {
+		v, n := ExtractHexN(src, 8)
+		if n == 0 {
+			return ErrCodeUnmatched
+		} else if n < 8 {
+			return ErrCodeInvalid
+		} else if dst != nil {
+			dst.WriteByte(byte(v))
+		}
+		return ErrCodeNone
+	}
+}
+
+// HexCodeunit_XXXX this is a tricky one that is specialized for escape sequences
+// that may decode into a utf-16 pair of surrogates which, in turn, needs to be
+// re-assembled into a single codeunit. JSON is a good example.
+func HexCodeunit_XXXX(prefix string) StringCapturer {
+	if prefix == "" {
+		panic("HexCodeunit_XXXX requires non-empty prefix")
+	}
+	return func(src Source, dst *strings.Builder) ErrCode {
+		if !src.Leap(prefix) {
+			return ErrCodeUnmatched
+		}
+		c, n := ExtractHexN(src, 4)
+		if n < 4 {
+			return ErrCodeInvalid
+		}
+		if c >= 0xD800 && c <= 0xDBFF {
+			// try to avoid decoding into utf16 surrogate pairs
+			if prefix == "" || src.Leap(prefix) {
+				c2, n := ExtractHexN(src, 4)
+				if n < 4 {
+					return ErrCodeInvalid
+				}
+				if c2 >= 0xDC00 && c2 <= 0xDFFF {
+					dst.WriteRune(rune((((c & 0x3ff) << 10) | (c2 & 0x3ff)) + 0x10000))
+				} else {
+					// decode as pair
+					dst.WriteRune(rune(c))
+					dst.WriteRune(rune(c2))
+				}
+				return ErrCodeNone
+			}
+		}
+		dst.WriteRune(rune(c))
+		return ErrCodeNone
+	}
+}
+
+func Skip[C Capturer](c C) Skipper {
+	switch c := any(c).(type) {
+	case Skipper:
+		return c
+	case ValueCapturer:
+		return func(src Source) ErrCode {
+			_, ec := c(src)
+			return ec
+		}
+	case StringCapturer:
+		return func(src Source) ErrCode { return c(src, nil) }
+	case rune:
+		return func(src Source) ErrCode {
+			if src.Hop(c) {
+				return ErrCodeNone
+			} else {
+				return ErrCodeUnmatched
+			}
+		}
+	case string:
+		return func(src Source) ErrCode {
+			if src.Leap(c) {
+				return ErrCodeNone
+			} else {
+				return ErrCodeUnmatched
+			}
+		}
+	default:
+		return func(src Source) ErrCode {
+			// noop
+			return ErrCodeNone
+		}
+	}
+}
+
+func string_between[P Capturer, T Capturer](prefix P, content StringCapturer, terminator T, dst *strings.Builder) StringCapturer {
+	if content == nil {
+		panic("empty content capturer is not allowed")
+	}
+
+	prefix_skipper := Skip(prefix)
+	terminator_skipper := Skip(terminator)
+
+	return func(src Source, dst *strings.Builder) ErrCode {
+		ec := prefix_skipper(src)
+		if ec != ErrCodeNone {
+			return ec
+		}
+
+		ec = content(src, dst) // capturing
+
+		if ec == ErrCodeNone {
+			ec = terminator_skipper(src)
+		}
+
+		return ec
+	}
+}
+
+func value_between[P Capturer, T Capturer](prefix P, content ValueCapturer, terminator T, dst *strings.Builder) ValueCapturer {
+	if content == nil {
+		panic("empty content capturer is not allowed")
+	}
+
+	prefix_skipper := Skip(prefix)
+	terminator_skipper := Skip(terminator)
+
+	return func(src Source) (v any, ec ErrCode) {
+		ec = prefix_skipper(src)
+		if ec != ErrCodeNone {
+			return
+		}
+
+		v, ec = content(src) // capturing
+
+		if ec == ErrCodeNone {
+			ec = terminator_skipper(src)
+		}
+
+		return v, ec
 	}
 }
