@@ -6,14 +6,14 @@ type Key = any
 
 type Binding[K Key] struct {
 	k     K
-	c     any
+	c     ValueCapturer
 	descr string
 }
 
-func Bind[K Key, C Capturer](key K, c C, descr string) *Binding[K] {
+func Bind[K Key](key K, descr string, sequence ...any) *Binding[K] {
 	return &Binding[K]{
 		k:     key,
-		c:     c,
+		c:     Sequence(sequence...),
 		descr: descr,
 	}
 }

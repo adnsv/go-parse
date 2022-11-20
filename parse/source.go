@@ -27,14 +27,15 @@ type Source interface {
 	Skip(f func(rune) bool) (c rune, size int)
 }
 
-type Skipper = func(Source) ErrCode
+type Context struct {
+	strings.Builder
+	vals []any
+}
 
-type ValueCapturer = func(Source) (any, ErrCode)
-
-type StringCapturer = func(Source, *strings.Builder) ErrCode
+type ValueCapturer = func(Source, *Context) ErrCode
 
 type Capturer interface {
-	StringCapturer | ValueCapturer | Skipper | string
+	ValueCapturer | rune | string | func(rune) bool
 }
 
 type static_impl struct {
