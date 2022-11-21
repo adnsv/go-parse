@@ -29,8 +29,7 @@ func Invalid(v string) *ErrContent      { return &ErrContent{ErrCodeInvalid, v} 
 type ErrCode int
 
 const (
-	ErrCodeUnmatched = ErrCode(-1)
-	ErrCodeNone      = ErrCode(iota)
+	ErrCodeNone = ErrCode(iota)
 	ErrCodeUnexpected
 	ErrCodeExpected
 	ErrCodeUnterminated
@@ -38,6 +37,8 @@ const (
 	ErrCodeUnpaired
 	ErrCodeInvalid
 	ErrCodeOverflow
+
+	ErrCodeUnmatched = ErrCode(-1)
 )
 
 func (ec ErrCode) String() string {

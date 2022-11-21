@@ -50,18 +50,20 @@ func ExtractHexN(src Source, max_chars uint) (v uint, n_chars uint) {
 	return
 }
 
-// UintCapturer captures numeric value v from a sequence of one or more hex digits.
-func UintCapturer[T unsigned](base uint, maxval T) func(src Source) (v T, ec ErrCode) {
+// Uint captures numeric value v from a sequence of one or more hex digits.
+func Uint[T unsigned](base uint, maxval T) TermFunc {
 	match_digit := digit_matcher(base)
 	overflow_limit := maxval / T(base)
 
-	return func(src Source) (v T, ec ErrCode) {
+	return func(src Source, ctx *Context) (ec ErrCode) {
+		var v T
 		handle_digit := func(r rune) bool {
 			d := match_digit(r)
 			if d >= base {
 				return false
 			}
-			if ec != ErrCodeNone {
+			ctx.WriteRune(r)
+			if ec == ErrCodeNone {
 				overflow := v > overflow_limit
 				v *= T(base)
 				overflow = overflow || (v > maxval-T(d))
@@ -75,6 +77,8 @@ func UintCapturer[T unsigned](base uint, maxval T) func(src Source) (v T, ec Err
 		_, size := src.Skip(handle_digit)
 		if size == 0 {
 			ec = ErrCodeUnmatched
+		} else {
+			ctx.Values = append(ctx.Values, v)
 		}
 		return
 	}

@@ -6,7 +6,7 @@ type Key = any
 
 type Binding[K Key] struct {
 	k     K
-	c     ValueCapturer
+	c     TermFunc
 	descr string
 }
 
@@ -18,29 +18,18 @@ func Bind[K Key](key K, descr string, sequence ...any) *Binding[K] {
 	}
 }
 
-func Tokenize[T Key](buf []byte, bindings []*Binding[T], on_token func(k T, v any, lc LineCol)) error {
+func Tokenize[T Key](buf []byte, bindings []*Binding[T], on_token func(k T, c *Context, lc LineCol)) error {
 	lc := LineCol{}
 	src := Static(buf, &lc)
-	var captured any
 	var ec ErrCode
-	sb := strings.Builder{}
+	ctx := Context{}
 
 outer:
 	for !src.Done() {
 		lc_orig := lc
 		for _, binding := range bindings {
-			sb.Reset()
-			switch c := binding.c.(type) {
-			case ValueCapturer:
-				captured, ec = c(src)
-			case StringCapturer:
-				ec = c(src, &sb)
-				if ec == ErrCodeNone {
-					captured = sb.String()
-				}
-			default:
-				ec = ErrCodeUnmatched
-			}
+			ctx.Reset()
+			ec = binding.c(src, &ctx)
 			if ec == ErrCodeUnmatched {
 				continue
 			}
@@ -48,11 +37,27 @@ outer:
 				err := &ErrContent{Code: ec, What: binding.descr}
 				return &ErrAtLineCol{Err: err, Loc: lc_orig}
 			}
-			on_token(binding.k, captured, lc_orig)
+			on_token(binding.k, &ctx, lc_orig)
 			continue outer
 		}
 		err := &ErrContent{ErrCodeUnexpected, "content"}
 		return &ErrAtLineCol{Err: err, Loc: lc_orig}
 	}
 	return nil
+}
+
+type Context struct {
+	strings.Builder
+	Values []any
+}
+
+type TermFunc = func(Source, *Context) ErrCode
+
+type Term interface {
+	TermFunc | rune | string | func(rune) bool
+}
+
+func (c *Context) Reset() {
+	c.Builder.Reset()
+	c.Values = c.Values[:0]
 }

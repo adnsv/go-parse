@@ -2,11 +2,10 @@ package parse
 
 import (
 	"sort"
-	"strings"
 	"unicode/utf8"
 )
 
-func Codepoint(r rune) ValueCapturer {
+func Codepoint(r rune) TermFunc {
 	return func(src Source, ctx *Context) ErrCode {
 		if src.Hop(r) {
 			if ctx != nil {
@@ -19,7 +18,21 @@ func Codepoint(r rune) ValueCapturer {
 	}
 }
 
-func Literal(s string) ValueCapturer {
+func CodepointFunc(m func(rune) bool) TermFunc {
+	return func(src Source, ctx *Context) ErrCode {
+		r, size := src.Fetch(m)
+		if size > 0 {
+			if ctx != nil {
+				ctx.WriteRune(r)
+			}
+			return ErrCodeNone
+		} else {
+			return ErrCodeUnmatched
+		}
+	}
+}
+
+func Literal(s string) TermFunc {
 	if len(s) == 0 {
 		panic("empty literal capturer is not allowed")
 	}
@@ -35,23 +48,9 @@ func Literal(s string) ValueCapturer {
 	}
 }
 
-func CodepointFunc(m func(rune) bool) ValueCapturer {
-	return func(src Source, ctx *Context) ErrCode {
-		r, size := src.Fetch(m)
-		if size > 0 {
-			if ctx != nil {
-				ctx.WriteRune(r)
-			}
-			return ErrCodeNone
-		} else {
-			return ErrCodeUnmatched
-		}
-	}
-}
-
-func asValueCapturer(a any) ValueCapturer {
+func asValueCapturer(a any) TermFunc {
 	switch v := a.(type) {
-	case ValueCapturer:
+	case TermFunc:
 		return v
 	case rune:
 		return Codepoint(v)
@@ -64,15 +63,26 @@ func asValueCapturer(a any) ValueCapturer {
 	}
 }
 
-func asValueCapturers(args ...any) []ValueCapturer {
-	r := make([]ValueCapturer, 0, len(args))
+func asOptValueCapturer(a any) TermFunc {
+	if a == nil {
+		return nil
+	} else {
+		return asValueCapturer(a)
+	}
+}
+
+func asValueCapturers(args ...any) []TermFunc {
+	r := make([]TermFunc, 0, len(args))
 	for _, a := range args {
+		if a == nil {
+			continue
+		}
 		r = append(r, asValueCapturer(a))
 	}
 	return r
 }
 
-func Sequence(args ...any) ValueCapturer {
+func Sequence(args ...any) TermFunc {
 	if len(args) == 0 {
 		panic("empty sequence matcher is not allowed")
 	}
@@ -101,7 +111,7 @@ func Sequence(args ...any) ValueCapturer {
 }
 
 // Optional matches zero or one: (a)?
-func Optional[T Capturer](a T) ValueCapturer {
+func Optional[T Term](a T) TermFunc {
 	v := asValueCapturer(a)
 	return func(src Source, ctx *Context) ErrCode {
 		ec := v(src, ctx)
@@ -113,7 +123,7 @@ func Optional[T Capturer](a T) ValueCapturer {
 }
 
 // AnyOf matches and captures any of the provided literal sequences.
-func AnyOf(args ...string) ValueCapturer {
+func AnyOf(args ...string) TermFunc {
 	match_empty := len(args) > 0
 	matchers := map[rune][]string{}
 	for _, arg := range args {
@@ -158,7 +168,7 @@ func AnyOf(args ...string) ValueCapturer {
 	}
 }
 
-func OneOrMore[T Capturer](a T) ValueCapturer {
+func OneOrMore[T Term](a T) TermFunc {
 	v := asValueCapturer(a)
 	return func(src Source, ctx *Context) ErrCode {
 		ec := v(src, ctx)
@@ -176,7 +186,7 @@ func OneOrMore[T Capturer](a T) ValueCapturer {
 	}
 }
 
-func ZeroOrMore[T Capturer](a T) ValueCapturer {
+func ZeroOrMore[T Term](a T) TermFunc {
 	v := asValueCapturer(a)
 	return func(src Source, ctx *Context) ErrCode {
 		for {
@@ -190,7 +200,7 @@ func ZeroOrMore[T Capturer](a T) ValueCapturer {
 	}
 }
 
-func FirstOf(args ...any) ValueCapturer {
+func FirstOf(args ...any) TermFunc {
 	switch len(args) {
 	case 0:
 		panic("empty literal capturer is not allowed")
@@ -212,7 +222,7 @@ func FirstOf(args ...any) ValueCapturer {
 	}
 }
 
-func EOF(src Source, dst *strings.Builder) ErrCode {
+func EOF(src Source, ctx *Context) ErrCode {
 	if src.Done() {
 		return ErrCodeNone
 	} else {
@@ -220,19 +230,18 @@ func EOF(src Source, dst *strings.Builder) ErrCode {
 	}
 }
 
-func EOL(src Source, dst *strings.Builder) ErrCode {
+func EOL(src Source, ctx *Context) ErrCode {
 	switch {
 	case src.Done():
 		return ErrCodeNone
 	case src.Hop('\n'):
-		if dst != nil {
-			dst.WriteByte('\n')
+		if ctx != nil {
+			ctx.WriteByte('\n')
 		}
 		return ErrCodeNone
 	case src.Leap("\r\n"):
-		if dst != nil {
-			dst.WriteByte('\r')
-			dst.WriteByte('\n')
+		if ctx != nil {
+			ctx.WriteString("\r\n")
 		}
 		return ErrCodeNone
 	default:
@@ -244,7 +253,7 @@ func EOL(src Source, dst *strings.Builder) ErrCode {
 //
 //   - when `allow_one_digit` == true: `[0-9A-Fa-f][0-9A-Fa-f]?`
 //   - when `allow_one_digit` == false: `[0-9A-Fa-f][0-9A-Fa-f]`
-func HexCodeunit(allow_one_digit bool) ValueCapturer {
+func HexCodeunit(allow_one_digit bool) TermFunc {
 	return func(src Source, ctx *Context) ErrCode {
 		v, n := ExtractHexN(src, 2)
 		if n == 0 {
@@ -258,7 +267,7 @@ func HexCodeunit(allow_one_digit bool) ValueCapturer {
 	}
 }
 
-func HexCodepoint_XXXX() ValueCapturer {
+func HexCodepoint_XXXX() TermFunc {
 	return func(src Source, ctx *Context) ErrCode {
 		v, n := ExtractHexN(src, 4)
 		if n == 0 {
@@ -272,7 +281,7 @@ func HexCodepoint_XXXX() ValueCapturer {
 	}
 }
 
-func HexCodepoint_XXXXXXXX() ValueCapturer {
+func HexCodepoint_XXXXXXXX() TermFunc {
 	return func(src Source, ctx *Context) ErrCode {
 		v, n := ExtractHexN(src, 8)
 		if n == 0 {
@@ -289,7 +298,7 @@ func HexCodepoint_XXXXXXXX() ValueCapturer {
 // HexCodeunit_XXXX this is a tricky one that is specialized for escape sequences
 // that may decode into a utf-16 pair of surrogates which, in turn, needs to be
 // re-assembled into a single codeunit. JSON is a good example.
-func HexCodeunit_XXXX(prefix string) ValueCapturer {
+func HexCodeunit_XXXX(prefix string) TermFunc {
 	if prefix == "" {
 		panic("HexCodeunit_XXXX requires non-empty prefix")
 	}
@@ -327,94 +336,27 @@ func HexCodeunit_XXXX(prefix string) ValueCapturer {
 	}
 }
 
-func Skip[C Capturer](c C) Skipper {
-	switch c := any(c).(type) {
-	case Skipper:
-		return c
-	case ValueCapturer:
-		return func(src Source) ErrCode {
-			_, ec := c(src)
-			return ec
-		}
-	case StringCapturer:
-		return func(src Source) ErrCode { return c(src, nil) }
-	case rune:
-		return func(src Source) ErrCode {
-			if src.Hop(c) {
-				return ErrCodeNone
-			} else {
-				return ErrCodeUnmatched
-			}
-		}
-	case string:
-		return func(src Source) ErrCode {
-			if src.Leap(c) {
-				return ErrCodeNone
-			} else {
-				return ErrCodeUnmatched
-			}
-		}
-	case func(rune) bool:
-		return func(src Source) ErrCode {
-			_, n := src.Fetch(c)
-			if n > 0 {
-				return ErrCodeNone
-			} else {
-				return ErrCodeUnmatched
-			}
-		}
-	default:
-		return func(src Source) ErrCode {
-			// noop
-			return ErrCodeNone
-		}
-	}
-}
-
-func string_between[P Capturer, T Capturer](prefix P, content StringCapturer, terminator T, dst *strings.Builder) StringCapturer {
+func Between(prefix, terminator any, content ...any) TermFunc {
 	if content == nil {
 		panic("empty content capturer is not allowed")
 	}
 
-	prefix_skipper := Skip(prefix)
-	terminator_skipper := Skip(terminator)
+	prefix_v := asValueCapturer(prefix)
+	terminator_v := asValueCapturer(terminator)
+	content_v := Sequence(content...)
 
-	return func(src Source, dst *strings.Builder) ErrCode {
-		ec := prefix_skipper(src)
+	return func(src Source, ctx *Context) ErrCode {
+		ec := prefix_v(src, nil)
 		if ec != ErrCodeNone {
 			return ec
 		}
 
-		ec = content(src, dst) // capturing
+		ec = content_v(src, ctx) // capturing
 
 		if ec == ErrCodeNone {
-			ec = terminator_skipper(src)
+			ec = terminator_v(src, nil)
 		}
 
 		return ec
-	}
-}
-
-func value_between[P Capturer, T Capturer](prefix P, content ValueCapturer, terminator T, dst *strings.Builder) ValueCapturer {
-	if content == nil {
-		panic("empty content capturer is not allowed")
-	}
-
-	prefix_skipper := Skip(prefix)
-	terminator_skipper := Skip(terminator)
-
-	return func(src Source) (v any, ec ErrCode) {
-		ec = prefix_skipper(src)
-		if ec != ErrCodeNone {
-			return
-		}
-
-		v, ec = content(src) // capturing
-
-		if ec == ErrCodeNone {
-			ec = terminator_skipper(src)
-		}
-
-		return v, ec
 	}
 }

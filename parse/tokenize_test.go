@@ -9,27 +9,24 @@ func TestTokenize(t *testing.T) {
 
 	ws := func(c rune) bool { return c <= ' ' }
 
-	//	id_start := func(c rune) bool {
-	//		return 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_'
-	//	}
-	//	id_cont := func(c rune) bool {
-	//		return '0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_'
-	//	}
-	//
-	//	str_quote := func(c rune) bool {
-	//		return c == '\''
-	//	}
-	//	str_content := func(c rune) bool {
-	//		return c >= ' '
-	//	}
+	id_start := func(c rune) bool {
+		return 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_'
+	}
+	id_cont := func(c rune) bool {
+		return '0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_'
+	}
+
+	str_content := func(c rune) bool {
+		return c >= ' ' && c != 127
+	}
 
 	bb := []*Binding[string]{
-		Bind("ws", OneOrMore(ws), "white space"),
-		Bind("id", StartCont(id_start, id_cont), "ident"),
+		Bind("ws", "whitespace", OneOrMore(ws)),
+		Bind("id", "ident", id_start, ZeroOrMore(id_cont)),
+		Bind("str", "string", Between('\'', '\'', str_content)),
+		Bind("dec", "decimal", Uint[uint16](10, 1000)),
 		//Bind("hex", Uint(`\x`, ";", 16), "char code sequence"),
 		//Bind("hex", Uint(`\x`, ";", 16), "char code sequence"),
-		//Bind("dec", Uint("", "", 10), "digit sequence"),
-		//Bind("str", String(str_quote, str_content, 0), "string"),
 		//Bind("slc", Between("//", ""), "single-line comment"),
 		//Bind("mlc", Between("/*", "*/"), "multi-line comment"),
 		//Bind("punct", AnyOf("+", "+=", "="), "punct"),
@@ -40,13 +37,18 @@ func TestTokenize(t *testing.T) {
 		want string
 	}{
 		{"", ""},
-		//{"abc", "<id:abc>"},
-		//{"abc ", "<id:abc> "},
-		//{" abc ", " <id:abc> "},
-		//{"abc def", "<id:abc> <id:def>"},
-		//{"42", "<dec:42>"},
-		//{"00042", "<dec:42>"},
-		//{"42mm", "<dec:42><id:mm>"},
+		{" ", " "},
+		{"    ", " "},
+		{"abc", "<id:abc>"},
+		{"abc ", "<id:abc> "},
+		{" abc ", " <id:abc> "},
+		{"abc def", "<id:abc> <id:def>"},
+		{"42", "42"},
+		{"1000", "1000"},
+		{"1001", "<!ERR:[1:1] overflow decimal>"},
+		{"00042", "42"},
+		{"42mm", "42<id:mm>"},
+		{"42 mm", "42 <id:mm>"},
 		//{`\xff;`, "<hex:255>"},
 		//{`\xxyz;`, "<!ERR:[1:1] invalid char code sequence>"},
 		//{`42 \xxyz;`, "<dec:42> <!ERR:[1:4] invalid char code sequence>"},
@@ -77,12 +79,26 @@ func TestTokenize(t *testing.T) {
 		name := fmt.Sprintf("tokenize %q", tt.src)
 		t.Run(name, func(t *testing.T) {
 			got := ""
-			err := Tokenize([]byte(tt.src), bb, func(k string, v any, _ LineCol) {
-				if k == "ws" {
+			err := Tokenize([]byte(tt.src), bb, func(k string, c *Context, _ LineCol) {
+				switch k {
+				case "ws":
 					got += " "
-				} else {
-					got += fmt.Sprintf("<%s:%v>", k, v)
+				case "dec":
+					if len(c.Values) == 1 {
+						if v, ok := c.Values[0].(uint16); ok {
+							got += fmt.Sprintf("%d", v)
+						} else {
+							got += "#OVERFLOW"
+						}
+					} else {
+						got += "?"
+					}
+
+				default:
+					got += fmt.Sprintf("<%s:%v>", k, c.String())
+
 				}
+
 			})
 			if err != nil {
 				got += fmt.Sprintf("<!ERR:%s>", err.Error())

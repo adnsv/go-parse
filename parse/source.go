@@ -27,17 +27,6 @@ type Source interface {
 	Skip(f func(rune) bool) (c rune, size int)
 }
 
-type Context struct {
-	strings.Builder
-	vals []any
-}
-
-type ValueCapturer = func(Source, *Context) ErrCode
-
-type Capturer interface {
-	ValueCapturer | rune | string | func(rune) bool
-}
-
 type static_impl struct {
 	buf              []byte
 	pos              int
