@@ -8,7 +8,7 @@ type ErrContent struct {
 }
 
 func (e *ErrContent) Error() string {
-	return string(e.Code) + " " + e.What
+	return e.Code.String() + " " + e.What
 }
 
 type ErrAtLineCol struct {
@@ -26,13 +26,40 @@ func Unterminated(v string) *ErrContent { return &ErrContent{ErrCodeUnterminated
 func Unpaired(v string) *ErrContent     { return &ErrContent{ErrCodeUnpaired, v} }
 func Invalid(v string) *ErrContent      { return &ErrContent{ErrCodeInvalid, v} }
 
-type ErrCode string
+type ErrCode int
 
 const (
-	ErrCodeNone         = ErrCode("")
-	ErrCodeUnexpected   = ErrCode("unexpected")
-	ErrCodeExpected     = ErrCode("expected")
-	ErrCodeUnterminated = ErrCode("unterminated")
-	ErrCodeUnpaired     = ErrCode("unpaired")
-	ErrCodeInvalid      = ErrCode("invalid")
+	ErrCodeNone = ErrCode(iota)
+	ErrCodeUnexpected
+	ErrCodeExpected
+	ErrCodeUnterminated
+	ErrCodeIncomplete
+	ErrCodeUnpaired
+	ErrCodeInvalid
+	ErrCodeOverflow
+
+	ErrCodeUnmatched = ErrCode(-1)
 )
+
+func (ec ErrCode) String() string {
+	switch ec {
+	case ErrCodeNone:
+		return ""
+	case ErrCodeUnexpected:
+		return "unexpected"
+	case ErrCodeExpected:
+		return "expected"
+	case ErrCodeUnterminated:
+		return "unterminated"
+	case ErrCodeIncomplete:
+		return "incomplete"
+	case ErrCodeUnpaired:
+		return "unpaired"
+	case ErrCodeInvalid:
+		return "invalid"
+	case ErrCodeOverflow:
+		return "overflow"
+	default:
+		return "<unknown>"
+	}
+}
