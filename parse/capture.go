@@ -97,7 +97,7 @@ func Sequence(args ...any) TermFunc {
 			for _, m := range rest {
 				ec = m(src, ctx)
 				if ec == ErrCodeUnmatched {
-					return ErrCodeIncomplete
+					return ErrCodeNone
 				} else if ec != ErrCodeNone {
 					return ec
 				}
